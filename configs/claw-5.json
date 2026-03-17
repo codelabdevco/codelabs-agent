@@ -1,0 +1,9 @@
+{
+  "gateway": { "port": 3001, "bind": "0.0.0.0" },
+  "agents": {
+    "defaults": { "model": "anthropic:claude-haiku-4-5-20251001", "thinking": true, "compaction": { "enabled": true, "maxTokens": 150000 } },
+    "list": [{ "id": "finance-agent", "name": "Finance Assistant", "systemPrompt": "You are a finance agent for a waterworks contracting business (กปน.). Help with invoicing, accounting, bank reconciliation, and financial reporting. Be precise with numbers. Respond in Thai." }]
+  },
+  "channels": {},
+  "models": { "anthropic": { "provider": "anthropic", "models": ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"] } }
+}

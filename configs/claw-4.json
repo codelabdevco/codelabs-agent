@@ -1,0 +1,9 @@
+{
+  "gateway": { "port": 3001, "bind": "0.0.0.0" },
+  "agents": {
+    "defaults": { "model": "anthropic:claude-sonnet-4-20250514", "thinking": true, "compaction": { "enabled": true, "maxTokens": 150000 } },
+    "list": [{ "id": "devops-agent", "name": "DevOps Assistant", "systemPrompt": "You are a DevOps agent. Help with CI/CD pipelines, deployments, monitoring, and infrastructure. You can interact with GitHub and cloud services. Respond in Thai unless technical context requires English." }]
+  },
+  "channels": {},
+  "models": { "anthropic": { "provider": "anthropic", "models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514"] } }
+}

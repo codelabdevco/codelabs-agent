@@ -1,0 +1,26 @@
+node_modules/
+.next/
+.env
+*.log
+
+# Data (generated at runtime)
+data/
+backups/
+
+# Docker volumes
+*_data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build
+dist/
+out/
+.vercel/

@@ -1,0 +1,208 @@
+version: "3.8"
+
+# =============================================================================
+# Agent Fleet — Docker Compose
+# 6x OpenClaw Gateways + 1x n8n + 1x cAdvisor + 1x Dashboard
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # OpenClaw Instances (6 gateways, ports 18789-18794)
+  # ---------------------------------------------------------------------------
+  openclaw-1:
+    image: openclaw/openclaw:latest
+    container_name: claw-1-sales
+    restart: unless-stopped
+    ports:
+      - "18789:3001"
+    volumes:
+      - claw1_data:/app/data
+      - ./configs/claw-1.json:/app/data/.openclaw/openclaw.json:ro
+    environment:
+      - OPENCLAW_GATEWAY_TOKEN=${CLAW_1_TOKEN}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    labels:
+      - "fleet.role=sales"
+      - "fleet.agent=openclaw"
+
+  openclaw-2:
+    image: openclaw/openclaw:latest
+    container_name: claw-2-support
+    restart: unless-stopped
+    ports:
+      - "18790:3001"
+    volumes:
+      - claw2_data:/app/data
+      - ./configs/claw-2.json:/app/data/.openclaw/openclaw.json:ro
+    environment:
+      - OPENCLAW_GATEWAY_TOKEN=${CLAW_2_TOKEN}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    labels:
+      - "fleet.role=support"
+      - "fleet.agent=openclaw"
+
+  openclaw-3:
+    image: openclaw/openclaw:latest
+    container_name: claw-3-docs
+    restart: unless-stopped
+    ports:
+      - "18791:3001"
+    volumes:
+      - claw3_data:/app/data
+      - ./configs/claw-3.json:/app/data/.openclaw/openclaw.json:ro
+    environment:
+      - OPENCLAW_GATEWAY_TOKEN=${CLAW_3_TOKEN}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    labels:
+      - "fleet.role=docs"
+      - "fleet.agent=openclaw"
+
+  openclaw-4:
+    image: openclaw/openclaw:latest
+    container_name: claw-4-devops
+    restart: unless-stopped
+    ports:
+      - "18792:3001"
+    volumes:
+      - claw4_data:/app/data
+      - ./configs/claw-4.json:/app/data/.openclaw/openclaw.json:ro
+    environment:
+      - OPENCLAW_GATEWAY_TOKEN=${CLAW_4_TOKEN}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    labels:
+      - "fleet.role=devops"
+      - "fleet.agent=openclaw"
+
+  openclaw-5:
+    image: openclaw/openclaw:latest
+    container_name: claw-5-finance
+    restart: unless-stopped
+    ports:
+      - "18793:3001"
+    volumes:
+      - claw5_data:/app/data
+      - ./configs/claw-5.json:/app/data/.openclaw/openclaw.json:ro
+    environment:
+      - OPENCLAW_GATEWAY_TOKEN=${CLAW_5_TOKEN}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    labels:
+      - "fleet.role=finance"
+      - "fleet.agent=openclaw"
+
+  openclaw-6:
+    image: openclaw/openclaw:latest
+    container_name: claw-6-hr
+    restart: unless-stopped
+    ports:
+      - "18794:3001"
+    volumes:
+      - claw6_data:/app/data
+      - ./configs/claw-6.json:/app/data/.openclaw/openclaw.json:ro
+    environment:
+      - OPENCLAW_GATEWAY_TOKEN=${CLAW_6_TOKEN}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    labels:
+      - "fleet.role=hr"
+      - "fleet.agent=openclaw"
+
+  # ---------------------------------------------------------------------------
+  # n8n — Workflow automation + AI agents
+  # ---------------------------------------------------------------------------
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
+      - N8N_API_DISABLED=false
+      - WEBHOOK_URL=${N8N_WEBHOOK_URL:-http://localhost:5678/}
+    labels:
+      - "fleet.agent=n8n"
+
+  # ---------------------------------------------------------------------------
+  # cAdvisor — Container resource monitoring
+  # ---------------------------------------------------------------------------
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    privileged: true
+
+  # ---------------------------------------------------------------------------
+  # Dashboard — Next.js Agent Fleet Control
+  # ---------------------------------------------------------------------------
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: fleet-dashboard
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - FLEET_CONFIG_PATH=/app/fleet-config.json
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./fleet-config.json:/app/fleet-config.json:ro
+    depends_on:
+      - openclaw-1
+      - openclaw-2
+      - openclaw-3
+      - openclaw-4
+      - openclaw-5
+      - openclaw-6
+      - n8n
+      - cadvisor
+
+volumes:
+  claw1_data:
+  claw2_data:
+  claw3_data:
+  claw4_data:
+  claw5_data:
+  claw6_data:
+  n8n_data:

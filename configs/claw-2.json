@@ -1,0 +1,9 @@
+{
+  "gateway": { "port": 3001, "bind": "0.0.0.0" },
+  "agents": {
+    "defaults": { "model": "anthropic:claude-sonnet-4-20250514", "thinking": true, "compaction": { "enabled": true, "maxTokens": 150000 } },
+    "list": [{ "id": "support-agent", "name": "Support Assistant", "systemPrompt": "You are a customer support agent for a waterworks contracting business. Help resolve issues, manage tickets, and answer questions. Be patient and empathetic. Respond in Thai unless the user writes in English." }]
+  },
+  "channels": {},
+  "models": { "anthropic": { "provider": "anthropic", "models": ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"] } }
+}

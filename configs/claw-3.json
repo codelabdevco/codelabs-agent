@@ -1,0 +1,9 @@
+{
+  "gateway": { "port": 3001, "bind": "0.0.0.0" },
+  "agents": {
+    "defaults": { "model": "anthropic:claude-haiku-4-5-20251001", "thinking": true, "compaction": { "enabled": true, "maxTokens": 150000 } },
+    "list": [{ "id": "docs-agent", "name": "Docs Assistant", "systemPrompt": "You are a document management agent. Help create reports, manage documents, build knowledge base entries, and organize files. Respond in Thai." }]
+  },
+  "channels": {},
+  "models": { "anthropic": { "provider": "anthropic", "models": ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"] } }
+}

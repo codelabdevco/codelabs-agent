@@ -1,0 +1,75 @@
+{
+  "fleet": {
+    "name": "BANK Agent Fleet",
+    "version": "1.0.0"
+  },
+  "openclaw": [
+    {
+      "id": "claw-1",
+      "name": "Claw 1 — Sales",
+      "container": "claw-1-sales",
+      "host": "http://openclaw-1:3001",
+      "externalPort": 18789,
+      "role": "sales",
+      "description": "ดูแลลูกค้า, lead generation, follow-up"
+    },
+    {
+      "id": "claw-2",
+      "name": "Claw 2 — Support",
+      "container": "claw-2-support",
+      "host": "http://openclaw-2:3001",
+      "externalPort": 18790,
+      "role": "support",
+      "description": "ตอบคำถามลูกค้า, แก้ปัญหา, ticket"
+    },
+    {
+      "id": "claw-3",
+      "name": "Claw 3 — Docs",
+      "container": "claw-3-docs",
+      "host": "http://openclaw-3:3001",
+      "externalPort": 18791,
+      "role": "docs",
+      "description": "จัดการเอกสาร, สร้าง report, knowledge base"
+    },
+    {
+      "id": "claw-4",
+      "name": "Claw 4 — DevOps",
+      "container": "claw-4-devops",
+      "host": "http://openclaw-4:3001",
+      "externalPort": 18792,
+      "role": "devops",
+      "description": "CI/CD, monitoring, deployment"
+    },
+    {
+      "id": "claw-5",
+      "name": "Claw 5 — Finance",
+      "container": "claw-5-finance",
+      "host": "http://openclaw-5:3001",
+      "externalPort": 18793,
+      "role": "finance",
+      "description": "บัญชี, ใบแจ้งหนี้, การเงิน"
+    },
+    {
+      "id": "claw-6",
+      "name": "Claw 6 — HR",
+      "container": "claw-6-hr",
+      "host": "http://openclaw-6:3001",
+      "externalPort": 18794,
+      "role": "hr",
+      "description": "ทรัพยากรบุคคล, สรรหา, onboarding"
+    }
+  ],
+  "n8n": {
+    "host": "http://n8n:5678",
+    "externalPort": 5678,
+    "container": "n8n"
+  },
+  "cadvisor": {
+    "host": "http://cadvisor:8080"
+  },
+  "polling": {
+    "healthIntervalMs": 10000,
+    "statsIntervalMs": 5000,
+    "logsIntervalMs": 3000
+  }
+}
