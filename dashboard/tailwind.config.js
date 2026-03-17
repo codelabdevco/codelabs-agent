@@ -24,7 +24,7 @@ module.exports = {
         },
       },
       fontFamily: {
-        sans: ['"DM Sans"', "system-ui", "sans-serif"],
+        sans: ['"Noto Sans"', '"Noto Sans Thai"', "system-ui", "sans-serif"],
         mono: ['"JetBrains Mono"', "monospace"],
       },
     },
