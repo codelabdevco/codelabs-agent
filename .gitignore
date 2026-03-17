@@ -24,3 +24,4 @@ Thumbs.db
 dist/
 out/
 .vercel/
+push-to-git.sh
