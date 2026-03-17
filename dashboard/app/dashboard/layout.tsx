@@ -65,7 +65,7 @@ export default function DashboardLayout({
         {/* Logo */}
         <div className="px-5 py-5 border-b" style={{ borderColor: "var(--border-default)" }}>
           <h1 className="text-base font-medium tracking-tight" style={{ color: "var(--text-primary)" }}>
-            Agent Fleet
+            Codelabs Tech
           </h1>
           <p className="text-xs mt-0.5" style={{ color: "var(--text-tertiary)" }}>
             6 OpenClaw · 1 n8n
@@ -117,7 +117,7 @@ export default function DashboardLayout({
           className="px-5 py-4 border-t text-xs"
           style={{ borderColor: "var(--border-default)", color: "var(--text-tertiary)" }}
         >
-          Fleet Dashboard v1.0
+          Codelabs Tech v1.0
         </div>
       </aside>
 

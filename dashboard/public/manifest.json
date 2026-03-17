@@ -1,6 +1,6 @@
 {
-  "name": "Agent Fleet Dashboard",
-  "short_name": "FleetCtrl",
+  "name": "Codelabs Tech",
+  "short_name": "Codelabs",
   "start_url": "/dashboard",
   "display": "standalone",
   "background_color": "#f8f7f4",

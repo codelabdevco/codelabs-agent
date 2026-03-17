@@ -650,7 +650,7 @@ export default function ChatPage() {
               </button>
             </div>
             <p className="text-center text-xs mt-2" style={{ color: "var(--text-tertiary)", opacity: 0.6 }}>
-              Shift+Enter ขึ้นบรรทัดใหม่ · ประวัติบันทึกอัตโนมัติ · Agent Fleet Chat
+              Shift+Enter ขึ้นบรรทัดใหม่ · ประวัติบันทึกอัตโนมัติ · Codelabs Tech
             </p>
           </div>
         </div>

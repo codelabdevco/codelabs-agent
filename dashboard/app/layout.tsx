@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Agent Fleet Control",
-  description: "Unified dashboard for OpenClaw + n8n agent fleet",
+  title: "Codelabs Tech",
+  description: "AI Agent Dashboard — Codelabs Tech",
 };
 
 export default function RootLayout({
