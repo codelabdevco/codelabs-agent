@@ -1,151 +1,77 @@
-import { NextResponse } from "next/server";
-import { requireAuth } from "@/lib/auth-middleware";
-import { findUserById } from "@/lib/auth";
-import { addAuditLog } from "@/lib/audit";
-import { getFleetConfig, fetchWithTimeout } from "@/lib/fleet";
+import { NextRequest, NextResponse } from "next/server";
+import fs from "fs";
+import path from "path";
 
-export const dynamic = "force-dynamic";
+// ---------------------------------------------------------------------------
+// Chat API — proxy messages to OpenClaw agents
+// ---------------------------------------------------------------------------
 
-// Model pricing per 1K tokens (USD)
-const MODEL_PRICING: Record<string, { input: number; output: number }> = {
-  "claude-opus-4-20250514": { input: 0.015, output: 0.075 },
-  "claude-sonnet-4-20250514": { input: 0.003, output: 0.015 },
-  "claude-haiku-4-5-20251001": { input: 0.0008, output: 0.004 },
-  "gpt-4o": { input: 0.0025, output: 0.01 },
-  "gpt-4o-mini": { input: 0.00015, output: 0.0006 },
-};
+const fleetPath = process.env.FLEET_CONFIG_PATH || path.join(process.cwd(), "../fleet-config.json");
 
-// POST /api/chat — send message to an agent
-export async function POST(req: Request) {
-  const { auth, error } = requireAuth("action:chat");
-  if (error) return error;
-
-  const body = await req.json();
-  const { agentId, message, model } = body;
-
-  if (!agentId || !message) {
-    return NextResponse.json({ error: "Missing agentId or message" }, { status: 400 });
-  }
-
-  const config = getFleetConfig();
-  const instance = config.openclaw.find((c) => c.id === agentId);
-
-  if (!instance) {
-    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-  }
-
-  const user = findUserById(auth!.userId);
-  const username = user?.username || "unknown";
-
+function loadFleet() {
   try {
-    // Build headers
-    const num = instance.id.split("-")[1];
-    const tokenKey = `CLAW_${num}_TOKEN`;
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    const token = process.env[tokenKey];
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-
-    // Send to OpenClaw gateway
-    const res = await fetchWithTimeout(`${instance.host}/api/chat`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        message,
-        model: model || undefined,
-      }),
-      timeoutMs: 60000, // 60s for LLM response
-    });
-
-    if (!res.ok) {
-      return NextResponse.json(
-        { error: `Agent returned ${res.status}` },
-        { status: 502 }
-      );
-    }
-
-    const data = await res.json();
-
-    // Estimate tokens (rough: 1 token ≈ 4 chars for English, 1.5 for Thai)
-    const inputTokens = data.inputTokens || Math.ceil(message.length / 2.5);
-    const outputTokens =
-      data.outputTokens ||
-      Math.ceil((data.response || data.message || "").length / 2.5);
-
-    // Calculate cost
-    const pricing = MODEL_PRICING[model || "claude-sonnet-4-20250514"] || {
-      input: 0.003,
-      output: 0.015,
-    };
-    const costUSD =
-      (inputTokens / 1000) * pricing.input +
-      (outputTokens / 1000) * pricing.output;
-
-    // Audit
-    await addAuditLog({
-      userId: auth!.userId,
-      username,
-      action: "chat_message",
-      target: agentId,
-      detail: `"${message.slice(0, 60)}${message.length > 60 ? "..." : ""}" → ${inputTokens}+${outputTokens} tokens, $${costUSD.toFixed(4)}`,
-    });
-
-    return NextResponse.json({
-      response: data.response || data.message || data.text || "OK",
-      model: data.model || model || "claude-sonnet-4-20250514",
-      inputTokens,
-      outputTokens,
-      costUSD,
-      costTHB: costUSD * 34.5,
-      timestamp: Date.now(),
-    });
-  } catch (err: any) {
-    return NextResponse.json(
-      { error: err.message || "Failed to reach agent" },
-      { status: 502 }
-    );
+    return JSON.parse(fs.readFileSync(fleetPath, "utf-8"));
+  } catch {
+    return { openclaw: [], n8n: {} };
   }
 }
 
-// GET /api/chat — get chat history for an agent (from session API)
-export async function GET(req: Request) {
-  const { auth, error } = requireAuth("action:chat");
-  if (error) return error;
-
-  const { searchParams } = new URL(req.url);
-  const agentId = searchParams.get("agentId");
-
-  if (!agentId) {
-    return NextResponse.json({ error: "Missing agentId" }, { status: 400 });
-  }
-
-  const config = getFleetConfig();
-  const instance = config.openclaw.find((c) => c.id === agentId);
-
-  if (!instance) {
-    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-  }
-
+// POST — send message to agent
+export async function POST(req: NextRequest) {
   try {
-    const num = instance.id.split("-")[1];
-    const tokenKey = `CLAW_${num}_TOKEN`;
-    const headers: Record<string, string> = {};
-    const token = process.env[tokenKey];
-    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const body = await req.json();
+    const { agentId, message, model } = body;
 
-    const res = await fetchWithTimeout(`${instance.host}/api/sessions`, {
-      headers,
-      timeoutMs: 5000,
-    });
+    const fleet = loadFleet();
+    const agent = fleet.openclaw?.find((a: any) => a.id === agentId);
 
-    if (!res.ok) {
-      return NextResponse.json({ sessions: [] });
+    if (!agent) {
+      return NextResponse.json({ error: "Agent not found" }, { status: 404 });
     }
 
-    const sessions = await res.json();
-    return NextResponse.json({ sessions, timestamp: Date.now() });
-  } catch {
-    return NextResponse.json({ sessions: [] });
+    // Try to proxy to OpenClaw agent
+    try {
+      const res = await fetch(`${agent.host}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message, model }),
+        signal: AbortSignal.timeout(30000),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        return NextResponse.json({
+          response: data.response || data.message || data.text || JSON.stringify(data),
+          model: data.model || model || "unknown",
+          tokens: data.tokens || { input: 0, output: 0 },
+          latencyMs: data.latencyMs || 0,
+        });
+      }
+    } catch {
+      // Agent offline — return simulated response
+    }
+
+    // Fallback: agent offline simulation
+    return NextResponse.json({
+      response: `⚠️ **${agent.name}** is currently offline.\n\nThe agent container \`${agent.container}\` is not responding. Please check:\n- Container status in the **Agents** page\n- Use **Orchestrator** to auto-restart\n\n_Your message: "${message.slice(0, 100)}${message.length > 100 ? "..." : ""}"_`,
+      model: "offline",
+      tokens: { input: 0, output: 0 },
+      latencyMs: 0,
+      offline: true,
+    });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
+}
+
+// GET — list available agents for chat
+export async function GET() {
+  const fleet = loadFleet();
+  const agents = (fleet.openclaw || []).map((a: any) => ({
+    id: a.id,
+    name: a.name,
+    role: a.role,
+    description: a.description,
+  }));
+  return NextResponse.json({ agents });
 }

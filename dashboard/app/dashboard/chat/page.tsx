@@ -1,1086 +1,659 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import useSWR from "swr";
-import { StatusDot } from "@/components/StatusDot";
-import {
-  Copy,
-  Check,
-  RefreshCw,
-  ThumbsUp,
-  ThumbsDown,
-  Send,
-  Bot,
-  User,
-  Sparkles,
-  ChevronDown,
-  MessageSquare,
-  Zap,
-  Clock,
-  DollarSign,
-} from "lucide-react";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+interface Agent {
+  id: string;
+  name: string;
+  role: string;
+  description: string;
+}
+
+interface Message {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  agentId: string;
+  timestamp: number;
+  model?: string;
+  tokens?: { input: number; output: number };
+  latencyMs?: number;
+  offline?: boolean;
+}
+
+interface Conversation {
+  id: string;
+  agentId: string;
+  title: string;
+  messages: Message[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+const ROLE_EMOJI: Record<string, string> = {
+  sales: "💼",
+  support: "🎧",
+  docs: "📄",
+  devops: "⚙️",
+  finance: "💰",
+  hr: "👥",
+};
+
+const ROLE_COLORS: Record<string, string> = {
+  sales: "#6366f1",
+  support: "#0ea5e9",
+  docs: "#8b5cf6",
+  devops: "#f59e0b",
+  finance: "#10b981",
+  hr: "#ec4899",
+};
+
+const STORAGE_KEY = "fleet-chat-conversations";
+const THB_PER_USD = 35;
+
+// Pricing per 1M tokens (Claude 3.5 Sonnet approximate)
+const PRICE_INPUT = 3.0;
+const PRICE_OUTPUT = 15.0;
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
-/* ── Model definitions ───────────────────────────────── */
-const MODELS = [
-  { value: "claude-sonnet-4-20250514", label: "Sonnet 4", color: "#818cf8", icon: "✦" },
-  { value: "claude-opus-4-20250514", label: "Opus 4", color: "#c084fc", icon: "✦" },
-  { value: "claude-haiku-4-5-20251001", label: "Haiku 4.5", color: "#38bdf8", icon: "✦" },
-  { value: "gpt-4o", label: "GPT-4o", color: "#4ade80", icon: "◈" },
-  { value: "gpt-4o-mini", label: "GPT-4o Mini", color: "#86efac", icon: "◈" },
-];
-
-/* ── Agent role icons & colors ───────────────────────── */
-const AGENT_THEMES: Record<string, { icon: string; gradient: string }> = {
-  sales: { icon: "💼", gradient: "from-amber-500/20 to-orange-500/20" },
-  support: { icon: "🎧", gradient: "from-blue-500/20 to-cyan-500/20" },
-  docs: { icon: "📄", gradient: "from-emerald-500/20 to-green-500/20" },
-  devops: { icon: "⚙️", gradient: "from-purple-500/20 to-violet-500/20" },
-  finance: { icon: "📊", gradient: "from-yellow-500/20 to-amber-500/20" },
-  hr: { icon: "👥", gradient: "from-pink-500/20 to-rose-500/20" },
-  default: { icon: "🤖", gradient: "from-indigo-500/20 to-blue-500/20" },
-};
-
-function getAgentTheme(type?: string) {
-  if (!type) return AGENT_THEMES.default;
-  const key = type.toLowerCase();
-  return AGENT_THEMES[key] || AGENT_THEMES.default;
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+function generateId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
-/* ── Simple Markdown Renderer ────────────────────────── */
-function MarkdownContent({ text }: { text: string }) {
-  const parts = useMemo(() => parseMarkdown(text), [text]);
-  return <div className="markdown-content">{parts}</div>;
-}
-
-function parseMarkdown(text: string) {
-  const blocks: React.ReactNode[] = [];
-  const lines = text.split("\n");
-  let i = 0;
-  let key = 0;
-
-  while (i < lines.length) {
-    const line = lines[i];
-
-    // Code block (```)
-    if (line.trimStart().startsWith("```")) {
-      const lang = line.trimStart().slice(3).trim();
-      const codeLines: string[] = [];
-      i++;
-      while (i < lines.length && !lines[i].trimStart().startsWith("```")) {
-        codeLines.push(lines[i]);
-        i++;
-      }
-      i++; // skip closing ```
-      blocks.push(
-        <CodeBlock key={key++} code={codeLines.join("\n")} language={lang} />
-      );
-      continue;
-    }
-
-    // Heading
-    if (line.startsWith("### ")) {
-      blocks.push(
-        <h4 key={key++} className="text-sm font-semibold mt-3 mb-1" style={{ color: "var(--text-primary)" }}>
-          {renderInline(line.slice(4))}
-        </h4>
-      );
-      i++;
-      continue;
-    }
-    if (line.startsWith("## ")) {
-      blocks.push(
-        <h3 key={key++} className="text-sm font-semibold mt-3 mb-1" style={{ color: "var(--text-primary)" }}>
-          {renderInline(line.slice(3))}
-        </h3>
-      );
-      i++;
-      continue;
-    }
-    if (line.startsWith("# ")) {
-      blocks.push(
-        <h2 key={key++} className="text-base font-semibold mt-3 mb-1" style={{ color: "var(--text-primary)" }}>
-          {renderInline(line.slice(2))}
-        </h2>
-      );
-      i++;
-      continue;
-    }
-
-    // Unordered list
-    if (/^[\s]*[-*]\s/.test(line)) {
-      const listItems: React.ReactNode[] = [];
-      while (i < lines.length && /^[\s]*[-*]\s/.test(lines[i])) {
-        listItems.push(
-          <li key={key++} className="ml-4 text-sm leading-relaxed list-disc" style={{ color: "var(--text-primary)" }}>
-            {renderInline(lines[i].replace(/^[\s]*[-*]\s/, ""))}
-          </li>
-        );
-        i++;
-      }
-      blocks.push(<ul key={key++} className="my-1.5 space-y-0.5">{listItems}</ul>);
-      continue;
-    }
-
-    // Ordered list
-    if (/^[\s]*\d+\.\s/.test(line)) {
-      const listItems: React.ReactNode[] = [];
-      while (i < lines.length && /^[\s]*\d+\.\s/.test(lines[i])) {
-        listItems.push(
-          <li key={key++} className="ml-4 text-sm leading-relaxed list-decimal" style={{ color: "var(--text-primary)" }}>
-            {renderInline(lines[i].replace(/^[\s]*\d+\.\s/, ""))}
-          </li>
-        );
-        i++;
-      }
-      blocks.push(<ol key={key++} className="my-1.5 space-y-0.5">{listItems}</ol>);
-      continue;
-    }
-
-    // Blockquote
-    if (line.startsWith("> ")) {
-      const quoteLines: string[] = [];
-      while (i < lines.length && lines[i].startsWith("> ")) {
-        quoteLines.push(lines[i].slice(2));
-        i++;
-      }
-      blocks.push(
-        <blockquote
-          key={key++}
-          className="border-l-2 pl-3 my-2 text-sm italic"
-          style={{ borderColor: "var(--accent)", color: "var(--text-secondary)" }}
-        >
-          {renderInline(quoteLines.join(" "))}
-        </blockquote>
-      );
-      continue;
-    }
-
-    // Horizontal rule
-    if (/^[-*_]{3,}$/.test(line.trim())) {
-      blocks.push(<hr key={key++} className="my-3 border-t" style={{ borderColor: "var(--border-default)" }} />);
-      i++;
-      continue;
-    }
-
-    // Empty line
-    if (line.trim() === "") {
-      i++;
-      continue;
-    }
-
-    // Normal paragraph
-    blocks.push(
-      <p key={key++} className="text-sm leading-relaxed my-1" style={{ color: "var(--text-primary)" }}>
-        {renderInline(line)}
-      </p>
-    );
-    i++;
+function loadConversations(): Conversation[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
   }
-
-  return <>{blocks}</>;
 }
 
-function renderInline(text: string): React.ReactNode {
-  // Process inline code, bold, italic, links
-  const parts: React.ReactNode[] = [];
-  let remaining = text;
-  let k = 0;
-
-  while (remaining.length > 0) {
-    // Inline code
-    let match = remaining.match(/^(.*?)`([^`]+)`([\s\S]*)$/);
-    if (match) {
-      if (match[1]) parts.push(renderPlainInline(match[1], k++));
-      parts.push(
-        <code
-          key={k++}
-          className="text-xs px-1.5 py-0.5 rounded-md font-mono"
-          style={{
-            background: "var(--surface-tertiary)",
-            color: "var(--accent)",
-          }}
-        >
-          {match[2]}
-        </code>
-      );
-      remaining = match[3];
-      continue;
-    }
-
-    // Bold
-    match = remaining.match(/^(.*?)\*\*(.+?)\*\*([\s\S]*)$/);
-    if (match) {
-      if (match[1]) parts.push(renderPlainInline(match[1], k++));
-      parts.push(<strong key={k++}>{match[2]}</strong>);
-      remaining = match[3];
-      continue;
-    }
-
-    // Italic
-    match = remaining.match(/^(.*?)\*(.+?)\*([\s\S]*)$/);
-    if (match) {
-      if (match[1]) parts.push(renderPlainInline(match[1], k++));
-      parts.push(<em key={k++}>{match[2]}</em>);
-      remaining = match[3];
-      continue;
-    }
-
-    // Link
-    match = remaining.match(/^(.*?)\[([^\]]+)\]\(([^)]+)\)([\s\S]*)$/);
-    if (match) {
-      if (match[1]) parts.push(renderPlainInline(match[1], k++));
-      parts.push(
-        <a key={k++} href={match[3]} target="_blank" rel="noopener noreferrer" className="underline" style={{ color: "var(--accent)" }}>
-          {match[2]}
-        </a>
-      );
-      remaining = match[4];
-      continue;
-    }
-
-    // No more patterns
-    parts.push(renderPlainInline(remaining, k++));
-    break;
-  }
-
-  return <>{parts}</>;
+function saveConversations(convos: Conversation[]) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(convos));
 }
 
-function renderPlainInline(text: string, key: number) {
-  return <span key={key}>{text}</span>;
+function calcCost(tokens: { input: number; output: number }) {
+  const usd = (tokens.input / 1_000_000) * PRICE_INPUT + (tokens.output / 1_000_000) * PRICE_OUTPUT;
+  return { usd, thb: usd * THB_PER_USD };
 }
 
-/* ── Code Block with Copy ────────────────────────────── */
-function CodeBlock({ code, language }: { code: string; language: string }) {
-  const [copied, setCopied] = useState(false);
+// ---------------------------------------------------------------------------
+// Simple Markdown Renderer (no external deps needed at runtime)
+// ---------------------------------------------------------------------------
+function renderMarkdown(text: string) {
+  // Split into code blocks and regular text
+  const parts = text.split(/(```[\s\S]*?```)/g);
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(code);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  return (
-    <div className="my-2.5 rounded-xl overflow-hidden" style={{ border: "1px solid var(--border-default)" }}>
-      {/* Header */}
-      <div
-        className="flex items-center justify-between px-4 py-2"
-        style={{ background: "var(--surface-tertiary)" }}
-      >
-        <span className="text-xs font-mono" style={{ color: "var(--text-tertiary)" }}>
-          {language || "code"}
-        </span>
-        <button
-          onClick={handleCopy}
-          className="flex items-center gap-1.5 text-xs px-2 py-1 rounded-md transition-all hover:opacity-80"
-          style={{ color: "var(--text-tertiary)" }}
-        >
-          {copied ? <Check size={12} /> : <Copy size={12} />}
-          {copied ? "Copied!" : "Copy"}
-        </button>
-      </div>
-      {/* Code */}
-      <pre
-        className="px-4 py-3 overflow-x-auto text-xs leading-relaxed font-mono"
-        style={{ background: "var(--surface-secondary)", color: "var(--text-primary)" }}
-      >
-        <code>{code}</code>
-      </pre>
-    </div>
-  );
-}
-
-/* ── Message Action Buttons ──────────────────────────── */
-function MessageActions({
-  text,
-  onRegenerate,
-  showRegenerate,
-}: {
-  text: string;
-  onRegenerate?: () => void;
-  showRegenerate: boolean;
-}) {
-  const [copied, setCopied] = useState(false);
-  const [liked, setLiked] = useState<"up" | "down" | null>(null);
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  return (
-    <div className="flex items-center gap-0.5 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
-      <button
-        onClick={handleCopy}
-        className="p-1.5 rounded-lg transition-all hover:scale-105"
-        style={{ color: copied ? "var(--status-online)" : "var(--text-tertiary)" }}
-        title="Copy message"
-      >
-        {copied ? <Check size={14} /> : <Copy size={14} />}
-      </button>
-      {showRegenerate && onRegenerate && (
-        <button
-          onClick={onRegenerate}
-          className="p-1.5 rounded-lg transition-all hover:scale-105"
-          style={{ color: "var(--text-tertiary)" }}
-          title="Regenerate"
-        >
-          <RefreshCw size={14} />
-        </button>
-      )}
-      <button
-        onClick={() => setLiked(liked === "up" ? null : "up")}
-        className="p-1.5 rounded-lg transition-all hover:scale-105"
-        style={{ color: liked === "up" ? "var(--status-online)" : "var(--text-tertiary)" }}
-        title="Good response"
-      >
-        <ThumbsUp size={14} fill={liked === "up" ? "currentColor" : "none"} />
-      </button>
-      <button
-        onClick={() => setLiked(liked === "down" ? null : "down")}
-        className="p-1.5 rounded-lg transition-all hover:scale-105"
-        style={{ color: liked === "down" ? "var(--status-offline)" : "var(--text-tertiary)" }}
-        title="Bad response"
-      >
-        <ThumbsDown size={14} fill={liked === "down" ? "currentColor" : "none"} />
-      </button>
-    </div>
-  );
-}
-
-/* ── Chat Message Interface ──────────────────────────── */
-interface ChatMessage {
-  id: string;
-  role: "user" | "assistant";
-  text: string;
-  time: string;
-  model?: string;
-  inputTokens?: number;
-  outputTokens?: number;
-  costUSD?: number;
-}
-
-/* ── Auto-resize Textarea ────────────────────────────── */
-function AutoResizeTextarea({
-  value,
-  onChange,
-  onSubmit,
-  placeholder,
-  disabled,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  onSubmit: () => void;
-  placeholder: string;
-  disabled: boolean;
-}) {
-  const ref = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    if (ref.current) {
-      ref.current.style.height = "auto";
-      ref.current.style.height = Math.min(ref.current.scrollHeight, 160) + "px";
-    }
-  }, [value]);
-
-  return (
-    <textarea
-      ref={ref}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" && !e.shiftKey) {
-          e.preventDefault();
-          onSubmit();
-        }
-      }}
-      placeholder={placeholder}
-      disabled={disabled}
-      rows={1}
-      className="flex-1 text-sm rounded-2xl px-4 py-3 resize-none focus:outline-none focus:ring-2 focus:ring-accent/30 transition-all"
-      style={{
-        background: "var(--surface-primary)",
-        color: "var(--text-primary)",
-        border: "1px solid var(--border-default)",
-        maxHeight: 160,
-        lineHeight: "1.5",
-      }}
-    />
-  );
-}
-
-/* ── Model Selector Dropdown ─────────────────────────── */
-function ModelSelector({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const current = MODELS.find((m) => m.value === value);
-
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, []);
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 text-xs px-3 py-1.5 rounded-xl transition-all hover:opacity-80"
-        style={{
-          background: `${current?.color || "#818cf8"}12`,
-          color: current?.color || "#818cf8",
-          border: `1px solid ${current?.color || "#818cf8"}25`,
-        }}
-      >
-        <Sparkles size={12} />
-        {current?.label || value}
-        <ChevronDown size={12} className={`transition-transform ${open ? "rotate-180" : ""}`} />
-      </button>
-
-      {open && (
-        <div
-          className="absolute right-0 top-full mt-1 z-50 rounded-xl overflow-hidden shadow-xl min-w-[200px]"
-          style={{
-            background: "var(--surface-primary)",
-            border: "1px solid var(--border-default)",
-          }}
-        >
-          {MODELS.map((m) => (
+  return parts.map((part, i) => {
+    // Code block
+    const codeMatch = part.match(/^```(\w*)\n?([\s\S]*?)```$/);
+    if (codeMatch) {
+      const lang = codeMatch[1] || "text";
+      const code = codeMatch[2].trimEnd();
+      return (
+        <div key={i} className="my-3 rounded-lg overflow-hidden" style={{ border: "0.5px solid var(--border-default)" }}>
+          <div className="flex items-center justify-between px-3 py-1.5" style={{ background: "var(--surface-tertiary)" }}>
+            <span className="text-xs font-mono" style={{ color: "var(--text-tertiary)" }}>{lang}</span>
             <button
-              key={m.value}
-              onClick={() => {
-                onChange(m.value);
-                setOpen(false);
-              }}
-              className="flex items-center gap-3 w-full px-4 py-2.5 text-left text-sm transition-all hover:opacity-80"
-              style={{
-                background: m.value === value ? `${m.color}10` : "transparent",
-                color: "var(--text-primary)",
-              }}
+              onClick={() => navigator.clipboard.writeText(code)}
+              className="text-xs px-2 py-0.5 rounded hover:opacity-80"
+              style={{ color: "var(--text-tertiary)" }}
             >
-              <span
-                className="w-2 h-2 rounded-full flex-shrink-0"
-                style={{ background: m.color }}
-              />
-              <span className="flex-1">{m.label}</span>
-              {m.value === value && (
-                <Check size={14} style={{ color: m.color }} />
-              )}
+              Copy
             </button>
-          ))}
+          </div>
+          <pre className="p-3 overflow-x-auto text-xs leading-relaxed" style={{ background: "var(--surface-secondary)", margin: 0 }}>
+            <code className="font-mono" style={{ color: "var(--text-primary)" }}>{code}</code>
+          </pre>
         </div>
-      )}
-    </div>
-  );
-}
-
-/* ── Main Chat Page ──────────────────────────────────── */
-export default function ChatPage() {
-  const { data: healthData } = useSWR("/api/health", fetcher, {
-    refreshInterval: 15000,
-  });
-  const agents = healthData?.agents ?? [];
-
-  const [selectedAgent, setSelectedAgent] = useState<string>("");
-  const [selectedModel, setSelectedModel] = useState("claude-sonnet-4-20250514");
-  const [messages, setMessages] = useState<Record<string, ChatMessage[]>>({});
-  const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const chatContainerRef = useRef<HTMLDivElement>(null);
-
-  // Auto-select first agent
-  useEffect(() => {
-    if (agents.length > 0 && !selectedAgent) {
-      setSelectedAgent(agents[0].id);
+      );
     }
-  }, [agents, selectedAgent]);
 
-  // Auto-scroll
-  useEffect(() => {
-    if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-    }
-  }, [messages, selectedAgent, sending]);
+    // Inline code
+    const inlined = part.split(/(`[^`]+`)/g).map((seg, j) => {
+      if (seg.startsWith("`") && seg.endsWith("`")) {
+        return (
+          <code
+            key={j}
+            className="text-xs px-1.5 py-0.5 rounded font-mono"
+            style={{ background: "var(--surface-tertiary)", color: "#e879f9" }}
+          >
+            {seg.slice(1, -1)}
+          </code>
+        );
+      }
 
-  const currentMessages = messages[selectedAgent] || [];
-  const currentAgent = agents.find((a: any) => a.id === selectedAgent);
-  const agentTheme = getAgentTheme(currentAgent?.type);
+      // Bold
+      let processed: (string | JSX.Element)[] = [seg];
+      processed = processed.flatMap((s) => {
+        if (typeof s !== "string") return [s];
+        return s.split(/(\*\*[^*]+\*\*)/g).map((p, k) => {
+          if (p.startsWith("**") && p.endsWith("**")) {
+            return <strong key={`b${k}`}>{p.slice(2, -2)}</strong>;
+          }
+          return p;
+        });
+      });
 
-  // Total cost for current agent
-  const agentCost = currentMessages
-    .filter((m) => m.role === "assistant")
-    .reduce((sum, m) => sum + (m.costUSD || 0), 0);
+      // Italic
+      processed = processed.flatMap((s) => {
+        if (typeof s !== "string") return [s];
+        return s.split(/(_[^_]+_)/g).map((p, k) => {
+          if (p.startsWith("_") && p.endsWith("_") && p.length > 2) {
+            return <em key={`i${k}`}>{p.slice(1, -1)}</em>;
+          }
+          return p;
+        });
+      });
 
-  const totalTokens = currentMessages
-    .filter((m) => m.role === "assistant")
-    .reduce((sum, m) => sum + (m.inputTokens || 0) + (m.outputTokens || 0), 0);
-
-  const generateId = () => `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-
-  const handleSend = useCallback(async () => {
-    if (!input.trim() || sending || !selectedAgent) return;
-    const msg = input.trim();
-    setInput("");
-
-    const now = new Date().toLocaleTimeString("th-TH", {
-      hour: "2-digit",
-      minute: "2-digit",
+      return <span key={j}>{processed}</span>;
     });
 
-    const userMsg: ChatMessage = {
+    // Split into paragraphs
+    const lines = part.split("\n");
+    return (
+      <div key={i}>
+        {lines.map((line, li) => {
+          if (line.startsWith("- ") || line.startsWith("* ")) {
+            return (
+              <div key={li} className="flex gap-2 ml-2">
+                <span style={{ color: "var(--text-tertiary)" }}>•</span>
+                <span>{line.slice(2)}</span>
+              </div>
+            );
+          }
+          if (line.match(/^\d+\.\s/)) {
+            const num = line.match(/^(\d+)\.\s(.*)/);
+            return (
+              <div key={li} className="flex gap-2 ml-2">
+                <span style={{ color: "var(--text-tertiary)" }}>{num?.[1]}.</span>
+                <span>{num?.[2]}</span>
+              </div>
+            );
+          }
+          if (line.trim() === "") return <div key={li} className="h-2" />;
+          return <div key={li}>{line}</div>;
+        })}
+      </div>
+    );
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+export default function ChatPage() {
+  const { data: agentData } = useSWR("/api/chat", fetcher);
+  const agents: Agent[] = agentData?.agents ?? [];
+
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [activeConvoId, setActiveConvoId] = useState<string | null>(null);
+  const [selectedAgent, setSelectedAgent] = useState<string>("claw-1");
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Load conversations from localStorage on mount
+  useEffect(() => {
+    const loaded = loadConversations();
+    setConversations(loaded);
+    if (loaded.length > 0) {
+      setActiveConvoId(loaded[0].id);
+      setSelectedAgent(loaded[0].agentId);
+    }
+  }, []);
+
+  // Save conversations when they change
+  useEffect(() => {
+    if (conversations.length > 0) {
+      saveConversations(conversations);
+    }
+  }, [conversations]);
+
+  // Scroll to bottom on new messages
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [conversations, activeConvoId]);
+
+  const activeConvo = conversations.find((c) => c.id === activeConvoId) || null;
+  const currentAgent = agents.find((a) => a.id === selectedAgent);
+
+  // Total tokens for active conversation
+  const totalTokens = activeConvo?.messages.reduce(
+    (acc, m) => ({
+      input: acc.input + (m.tokens?.input || 0),
+      output: acc.output + (m.tokens?.output || 0),
+    }),
+    { input: 0, output: 0 }
+  ) || { input: 0, output: 0 };
+
+  const cost = calcCost(totalTokens);
+
+  function startNewConversation(agentId?: string) {
+    const aid = agentId || selectedAgent;
+    const agent = agents.find((a) => a.id === aid);
+    const convo: Conversation = {
+      id: generateId(),
+      agentId: aid,
+      title: `Chat with ${agent?.name || aid}`,
+      messages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    setConversations((prev) => [convo, ...prev]);
+    setActiveConvoId(convo.id);
+    setSelectedAgent(aid);
+    setShowHistory(false);
+  }
+
+  const handleSend = useCallback(async () => {
+    if (!input.trim() || sending) return;
+
+    const userMessage: Message = {
       id: generateId(),
       role: "user",
-      text: msg,
-      time: now,
+      content: input.trim(),
+      agentId: selectedAgent,
+      timestamp: Date.now(),
     };
 
-    setMessages((prev) => ({
-      ...prev,
-      [selectedAgent]: [...(prev[selectedAgent] || []), userMsg],
-    }));
+    // Create new conversation if none active
+    let convoId = activeConvoId;
+    if (!convoId) {
+      const agent = agents.find((a) => a.id === selectedAgent);
+      const newConvo: Conversation = {
+        id: generateId(),
+        agentId: selectedAgent,
+        title: input.trim().slice(0, 50),
+        messages: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      convoId = newConvo.id;
+      setConversations((prev) => [newConvo, ...prev]);
+      setActiveConvoId(convoId);
+    }
 
+    // Add user message
+    setConversations((prev) =>
+      prev.map((c) =>
+        c.id === convoId
+          ? {
+              ...c,
+              messages: [...c.messages, userMessage],
+              title: c.messages.length === 0 ? input.trim().slice(0, 50) : c.title,
+              updatedAt: Date.now(),
+            }
+          : c
+      )
+    );
+
+    setInput("");
     setSending(true);
+
+    // Auto-resize textarea back
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "44px";
+    }
+
     try {
+      const start = Date.now();
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           agentId: selectedAgent,
-          message: msg,
-          model: selectedModel,
+          message: input.trim(),
         }),
       });
-
       const data = await res.json();
-      const replyTime = new Date().toLocaleTimeString("th-TH", {
-        hour: "2-digit",
-        minute: "2-digit",
-      });
+      const latency = Date.now() - start;
 
-      const assistantMsg: ChatMessage = {
+      const assistantMessage: Message = {
         id: generateId(),
         role: "assistant",
-        text: res.ok
-          ? data.response
-          : `Error: ${data.error || "Failed to reach agent"}`,
-        time: replyTime,
-        model: res.ok ? data.model : undefined,
-        inputTokens: res.ok ? data.inputTokens : undefined,
-        outputTokens: res.ok ? data.outputTokens : undefined,
-        costUSD: res.ok ? data.costUSD : undefined,
+        content: data.response || data.error || "No response",
+        agentId: selectedAgent,
+        timestamp: Date.now(),
+        model: data.model,
+        tokens: data.tokens,
+        latencyMs: data.latencyMs || latency,
+        offline: data.offline,
       };
 
-      setMessages((prev) => ({
-        ...prev,
-        [selectedAgent]: [...(prev[selectedAgent] || []), assistantMsg],
-      }));
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === convoId
+            ? { ...c, messages: [...c.messages, assistantMessage], updatedAt: Date.now() }
+            : c
+        )
+      );
     } catch (err: any) {
-      setMessages((prev) => ({
-        ...prev,
-        [selectedAgent]: [
-          ...(prev[selectedAgent] || []),
-          {
-            id: generateId(),
-            role: "assistant",
-            text: `Network error: ${err.message}`,
-            time: new Date().toLocaleTimeString("th-TH"),
-          },
-        ],
-      }));
+      const errorMessage: Message = {
+        id: generateId(),
+        role: "assistant",
+        content: `❌ **Error:** ${err.message}`,
+        agentId: selectedAgent,
+        timestamp: Date.now(),
+        offline: true,
+      };
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === convoId
+            ? { ...c, messages: [...c.messages, errorMessage], updatedAt: Date.now() }
+            : c
+        )
+      );
     }
+
     setSending(false);
-  }, [input, sending, selectedAgent, selectedModel]);
+  }, [input, sending, selectedAgent, activeConvoId, agents]);
 
-  const handleRegenerate = useCallback(
-    async (msgIndex: number) => {
-      if (sending || !selectedAgent) return;
-      // Find the last user message before this assistant message
-      const agentMsgs = messages[selectedAgent] || [];
-      let userMsg = "";
-      for (let i = msgIndex - 1; i >= 0; i--) {
-        if (agentMsgs[i].role === "user") {
-          userMsg = agentMsgs[i].text;
-          break;
-        }
-      }
-      if (!userMsg) return;
+  function deleteConversation(id: string) {
+    setConversations((prev) => {
+      const updated = prev.filter((c) => c.id !== id);
+      saveConversations(updated);
+      return updated;
+    });
+    if (activeConvoId === id) {
+      setActiveConvoId(null);
+    }
+  }
 
-      // Remove the old assistant message
-      setMessages((prev) => ({
-        ...prev,
-        [selectedAgent]: prev[selectedAgent].filter((_, i) => i !== msgIndex),
-      }));
+  function clearAllConversations() {
+    setConversations([]);
+    setActiveConvoId(null);
+    localStorage.removeItem(STORAGE_KEY);
+  }
 
-      setSending(true);
-      try {
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            agentId: selectedAgent,
-            message: userMsg,
-            model: selectedModel,
-          }),
-        });
+  // Auto-resize textarea
+  function handleTextareaChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
+    setInput(e.target.value);
+    const ta = e.target;
+    ta.style.height = "44px";
+    ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
+  }
 
-        const data = await res.json();
-        const replyTime = new Date().toLocaleTimeString("th-TH", {
-          hour: "2-digit",
-          minute: "2-digit",
-        });
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  }
 
-        setMessages((prev) => ({
-          ...prev,
-          [selectedAgent]: [
-            ...(prev[selectedAgent] || []),
-            {
-              id: generateId(),
-              role: "assistant",
-              text: res.ok ? data.response : `Error: ${data.error}`,
-              time: replyTime,
-              model: data.model,
-              inputTokens: data.inputTokens,
-              outputTokens: data.outputTokens,
-              costUSD: data.costUSD,
-            },
-          ],
-        }));
-      } catch (err: any) {
-        setMessages((prev) => ({
-          ...prev,
-          [selectedAgent]: [
-            ...(prev[selectedAgent] || []),
-            {
-              id: generateId(),
-              role: "assistant",
-              text: `Network error: ${err.message}`,
-              time: new Date().toLocaleTimeString("th-TH"),
-            },
-          ],
-        }));
-      }
-      setSending(false);
-    },
-    [sending, selectedAgent, selectedModel, messages]
-  );
+  // Agent conversations grouped
+  const agentConvos = conversations.filter((c) => c.agentId === selectedAgent);
 
   return (
-    <div className="flex gap-0" style={{ height: "calc(100vh - 130px)" }}>
-      {/* ── Agent Sidebar ──────────────────────────── */}
+    <div className="flex h-[calc(100vh-48px)] -mx-6 -my-6">
+      {/* Agent Sidebar */}
       <div
-        className="flex-shrink-0 flex flex-col"
-        style={{
-          width: 240,
-          borderRight: "1px solid var(--border-default)",
-        }}
+        className="w-64 flex-shrink-0 border-r flex flex-col"
+        style={{ background: "var(--surface-primary)", borderColor: "var(--border-default)" }}
       >
-        {/* Sidebar header */}
-        <div className="px-4 py-3 flex-shrink-0" style={{ borderBottom: "1px solid var(--border-default)" }}>
-          <div className="flex items-center gap-2">
-            <div
-              className="w-7 h-7 rounded-lg flex items-center justify-center"
-              style={{ background: "rgba(99,102,241,0.1)" }}
-            >
-              <MessageSquare size={14} style={{ color: "var(--accent)" }} />
-            </div>
-            <div>
-              <p className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
-                Chat
-              </p>
-              <p className="text-xs" style={{ color: "var(--text-tertiary)" }}>
-                {agents.filter((a: any) => a.status === "online").length} agents online
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Agent list */}
-        <div className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5">
-          {agents.map((agent: any) => {
-            const theme = getAgentTheme(agent.type);
-            const isActive = selectedAgent === agent.id;
-            const agentMsgCount = (messages[agent.id] || []).length;
-
-            return (
+        {/* Agent List */}
+        <div className="p-3 border-b" style={{ borderColor: "var(--border-default)" }}>
+          <p className="text-xs font-medium mb-2" style={{ color: "var(--text-tertiary)", letterSpacing: "0.04em" }}>
+            AGENTS
+          </p>
+          <div className="space-y-1">
+            {agents.map((agent) => (
               <button
                 key={agent.id}
-                onClick={() => setSelectedAgent(agent.id)}
-                className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-left transition-all group"
+                onClick={() => {
+                  setSelectedAgent(agent.id);
+                  const latest = conversations.find((c) => c.agentId === agent.id);
+                  setActiveConvoId(latest?.id || null);
+                }}
+                className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-all"
                 style={{
-                  background: isActive ? "rgba(99,102,241,0.08)" : "transparent",
+                  background: selectedAgent === agent.id ? "rgba(99,102,241,0.08)" : "transparent",
+                  color: selectedAgent === agent.id ? "var(--accent)" : "var(--text-secondary)",
                 }}
               >
-                {/* Agent avatar */}
-                <div
-                  className="w-9 h-9 rounded-xl flex items-center justify-center text-base flex-shrink-0 transition-transform group-hover:scale-105"
-                  style={{
-                    background: isActive
-                      ? "rgba(99,102,241,0.15)"
-                      : "var(--surface-tertiary)",
-                  }}
-                >
-                  {theme.icon}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <p
-                      className="text-sm truncate"
-                      style={{
-                        color: isActive ? "var(--accent)" : "var(--text-primary)",
-                        fontWeight: isActive ? 600 : 400,
-                      }}
-                    >
-                      {agent.name}
-                    </p>
-                    <StatusDot status={agent.status} size="sm" />
-                  </div>
+                <span className="text-lg">{ROLE_EMOJI[agent.role] || "🤖"}</span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium truncate">{agent.name.replace(/^Claw \d+ — /, "")}</p>
                   <p className="text-xs truncate" style={{ color: "var(--text-tertiary)" }}>
-                    {agent.type}
-                    {agentMsgCount > 0 && (
-                      <span style={{ color: "var(--accent)", fontWeight: 500 }}>
-                        {" "}· {agentMsgCount} msgs
-                      </span>
-                    )}
+                    {agent.description.slice(0, 30)}
                   </p>
                 </div>
+                <span
+                  className="w-2 h-2 rounded-full flex-shrink-0"
+                  style={{ background: ROLE_COLORS[agent.role] || "#666" }}
+                />
               </button>
-            );
-          })}
-
-          {agents.length === 0 && (
-            <div className="text-center py-8">
-              <Bot size={24} className="mx-auto mb-2" style={{ color: "var(--text-tertiary)", opacity: 0.5 }} />
-              <p className="text-xs" style={{ color: "var(--text-tertiary)" }}>
-                No agents available
-              </p>
-            </div>
-          )}
+            ))}
+          </div>
         </div>
+
+        {/* Conversation History */}
+        <div className="flex-1 overflow-y-auto p-3">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-medium" style={{ color: "var(--text-tertiary)", letterSpacing: "0.04em" }}>
+              HISTORY
+            </p>
+            <button
+              onClick={() => startNewConversation()}
+              className="text-xs px-2 py-0.5 rounded"
+              style={{ color: "var(--accent)" }}
+            >
+              + New
+            </button>
+          </div>
+          <div className="space-y-1">
+            {agentConvos.length === 0 && (
+              <p className="text-xs py-4 text-center" style={{ color: "var(--text-tertiary)" }}>
+                No conversations yet
+              </p>
+            )}
+            {agentConvos.map((convo) => (
+              <div
+                key={convo.id}
+                className="group flex items-center rounded-lg cursor-pointer"
+                style={{
+                  background: activeConvoId === convo.id ? "var(--surface-tertiary)" : "transparent",
+                }}
+              >
+                <button
+                  onClick={() => setActiveConvoId(convo.id)}
+                  className="flex-1 text-left px-3 py-2 min-w-0"
+                >
+                  <p className="text-xs truncate" style={{ color: "var(--text-primary)" }}>
+                    {convo.title}
+                  </p>
+                  <p className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+                    {convo.messages.length} messages
+                  </p>
+                </button>
+                <button
+                  onClick={() => deleteConversation(convo.id)}
+                  className="opacity-0 group-hover:opacity-100 text-xs px-2 py-1 mr-1 rounded"
+                  style={{ color: "var(--text-tertiary)" }}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Clear All */}
+        {conversations.length > 0 && (
+          <div className="p-3 border-t" style={{ borderColor: "var(--border-default)" }}>
+            <button
+              onClick={clearAllConversations}
+              className="w-full text-xs py-1.5 rounded-lg"
+              style={{ color: "var(--text-tertiary)", border: "0.5px solid var(--border-default)" }}
+            >
+              Clear all history
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* ── Chat Area ──────────────────────────────── */}
+      {/* Chat Area */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Chat header */}
+        {/* Header */}
         <div
-          className="flex items-center justify-between px-5 py-3 flex-shrink-0"
-          style={{ borderBottom: "1px solid var(--border-default)", background: "var(--surface-primary)" }}
+          className="px-5 py-3 border-b flex items-center justify-between flex-shrink-0"
+          style={{ background: "var(--surface-primary)", borderColor: "var(--border-default)" }}
         >
           <div className="flex items-center gap-3">
-            {currentAgent && (
-              <div
-                className="w-10 h-10 rounded-xl flex items-center justify-center text-lg"
-                style={{ background: "rgba(99,102,241,0.1)" }}
-              >
-                {agentTheme.icon}
-              </div>
-            )}
+            <span className="text-xl">{ROLE_EMOJI[currentAgent?.role || ""] || "🤖"}</span>
             <div>
-              <div className="flex items-center gap-2">
-                <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-                  {currentAgent?.name || "Select an agent"}
-                </p>
-                {currentAgent && <StatusDot status={currentAgent.status} size="sm" />}
-              </div>
-              <div className="flex items-center gap-3 mt-0.5">
-                {currentAgent && (
-                  <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
-                    {currentAgent.type}
-                  </span>
-                )}
-                {totalTokens > 0 && (
-                  <span className="flex items-center gap-1 text-xs" style={{ color: "var(--text-tertiary)" }}>
-                    <Zap size={10} />
-                    {totalTokens.toLocaleString()} tokens
-                  </span>
-                )}
-                {agentCost > 0 && (
-                  <span className="flex items-center gap-1 text-xs" style={{ color: "#f59e0b" }}>
-                    <DollarSign size={10} />
-                    ${agentCost.toFixed(4)} (฿{Math.round(agentCost * 34.5).toLocaleString()})
-                  </span>
-                )}
-              </div>
+              <h2 className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
+                {currentAgent?.name || "Select an agent"}
+              </h2>
+              <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
+                {currentAgent?.description || ""}
+              </p>
             </div>
           </div>
-
-          <ModelSelector value={selectedModel} onChange={setSelectedModel} />
-        </div>
-
-        {/* Messages area */}
-        <div
-          ref={chatContainerRef}
-          className="flex-1 overflow-y-auto px-5 py-4"
-          style={{ background: "var(--surface-secondary)" }}
-        >
-          {/* Empty state */}
-          {currentMessages.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full">
-              <div
-                className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4"
-                style={{ background: "rgba(99,102,241,0.08)" }}
-              >
-                <span className="text-3xl">{agentTheme.icon}</span>
-              </div>
-              <p className="text-base font-medium mb-1" style={{ color: "var(--text-primary)" }}>
-                {currentAgent?.name || "Agent Chat"}
-              </p>
-              <p className="text-sm mb-6" style={{ color: "var(--text-tertiary)" }}>
-                ส่งข้อความเพื่อเริ่มสนทนา
-              </p>
-              <div className="flex flex-wrap gap-2 max-w-md justify-center">
-                {[
-                  "สถานะระบบเป็นอย่างไร?",
-                  "สรุปงานวันนี้",
-                  "ช่วยตรวจสอบ logs",
-                ].map((suggestion) => (
-                  <button
-                    key={suggestion}
-                    onClick={() => {
-                      setInput(suggestion);
-                    }}
-                    className="text-xs px-3 py-2 rounded-xl transition-all hover:scale-[1.02]"
-                    style={{
-                      background: "var(--surface-primary)",
-                      color: "var(--text-secondary)",
-                      border: "1px solid var(--border-default)",
-                    }}
-                  >
-                    {suggestion}
-                  </button>
-                ))}
-              </div>
+          {activeConvo && (
+            <div className="flex items-center gap-4 text-xs" style={{ color: "var(--text-tertiary)" }}>
+              <span>
+                {totalTokens.input + totalTokens.output > 0
+                  ? `${(totalTokens.input + totalTokens.output).toLocaleString()} tokens`
+                  : ""}
+              </span>
+              {cost.usd > 0 && (
+                <span>
+                  ${cost.usd.toFixed(4)} / ฿{cost.thb.toFixed(2)}
+                </span>
+              )}
             </div>
           )}
+        </div>
 
-          {/* Messages */}
-          <div className="max-w-3xl mx-auto space-y-1">
-            {currentMessages.map((msg, i) => {
-              const isUser = msg.role === "user";
-              const isLastAssistant =
-                msg.role === "assistant" &&
-                i === currentMessages.length - 1;
-              const modelInfo = MODELS.find((m) => m.value === msg.model);
-
-              return (
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          {!activeConvo || activeConvo.messages.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full" style={{ color: "var(--text-tertiary)" }}>
+              <span className="text-4xl mb-4">{ROLE_EMOJI[currentAgent?.role || ""] || "🤖"}</span>
+              <p className="text-sm font-medium mb-1" style={{ color: "var(--text-secondary)" }}>
+                Chat with {currentAgent?.name || "an agent"}
+              </p>
+              <p className="text-xs text-center max-w-xs">
+                {currentAgent?.description || "Select an agent from the sidebar to start chatting"}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-4 max-w-3xl mx-auto">
+              {activeConvo.messages.map((msg) => (
                 <div
                   key={msg.id}
-                  className={`group flex gap-3 py-3 rounded-2xl transition-colors ${
-                    isUser ? "flex-row-reverse" : ""
-                  }`}
+                  className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
                 >
-                  {/* Avatar */}
-                  <div className="flex-shrink-0 pt-0.5">
-                    {isUser ? (
-                      <div
-                        className="w-8 h-8 rounded-xl flex items-center justify-center"
-                        style={{ background: "rgba(99,102,241,0.15)" }}
-                      >
-                        <User size={16} style={{ color: "var(--accent)" }} />
-                      </div>
-                    ) : (
-                      <div
-                        className="w-8 h-8 rounded-xl flex items-center justify-center"
-                        style={{ background: "var(--surface-tertiary)" }}
-                      >
-                        <span className="text-sm">{agentTheme.icon}</span>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Message content */}
-                  <div className={`flex-1 min-w-0 ${isUser ? "flex flex-col items-end" : ""}`}>
-                    {/* Name + time header */}
-                    <div className={`flex items-center gap-2 mb-1 ${isUser ? "flex-row-reverse" : ""}`}>
-                      <span className="text-xs font-medium" style={{ color: "var(--text-secondary)" }}>
-                        {isUser ? "You" : currentAgent?.name || "Agent"}
-                      </span>
-                      <span className="text-xs flex items-center gap-1" style={{ color: "var(--text-tertiary)" }}>
-                        <Clock size={10} />
-                        {msg.time}
-                      </span>
-                      {!isUser && modelInfo && (
-                        <span
-                          className="text-xs px-1.5 py-0.5 rounded-md font-medium"
-                          style={{
-                            background: `${modelInfo.color}15`,
-                            color: modelInfo.color,
-                            fontSize: 10,
-                          }}
-                        >
-                          {modelInfo.label}
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Bubble */}
-                    <div
-                      className={`inline-block rounded-2xl px-4 py-3 ${
-                        isUser ? "max-w-[85%]" : "max-w-full"
-                      }`}
-                      style={{
-                        background: isUser
-                          ? "rgba(99,102,241,0.1)"
-                          : "var(--surface-primary)",
-                        border: `1px solid ${
-                          isUser
-                            ? "rgba(99,102,241,0.2)"
-                            : "var(--border-default)"
-                        }`,
-                        borderRadius: isUser
-                          ? "20px 20px 6px 20px"
-                          : "20px 20px 20px 6px",
-                      }}
-                    >
-                      {isUser ? (
-                        <p
-                          className="text-sm leading-relaxed whitespace-pre-wrap"
-                          style={{ color: "var(--text-primary)" }}
-                        >
-                          {msg.text}
-                        </p>
-                      ) : (
-                        <MarkdownContent text={msg.text} />
-                      )}
-
-                      {/* Token info for assistant */}
-                      {!isUser && msg.inputTokens != null && (
-                        <div className="flex items-center gap-3 mt-2 pt-2" style={{ borderTop: "1px solid var(--border-default)" }}>
-                          <span className="text-xs flex items-center gap-1" style={{ color: "var(--text-tertiary)" }}>
-                            <Zap size={10} />
-                            {msg.inputTokens}+{msg.outputTokens} tokens
-                          </span>
-                          {msg.costUSD != null && (
-                            <span className="text-xs" style={{ color: "#f59e0b" }}>
-                              ${msg.costUSD.toFixed(4)}
-                            </span>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Action buttons (only for assistant) */}
-                    {!isUser && (
-                      <MessageActions
-                        text={msg.text}
-                        onRegenerate={() => handleRegenerate(i)}
-                        showRegenerate={isLastAssistant}
-                      />
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-
-            {/* Typing indicator */}
-            {sending && (
-              <div className="flex gap-3 py-3">
-                <div
-                  className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0"
-                  style={{ background: "var(--surface-tertiary)" }}
-                >
-                  <span className="text-sm">{agentTheme.icon}</span>
-                </div>
-                <div>
-                  <span className="text-xs font-medium mb-1 block" style={{ color: "var(--text-secondary)" }}>
-                    {currentAgent?.name || "Agent"}
-                  </span>
                   <div
-                    className="inline-flex items-center gap-1.5 rounded-2xl px-4 py-3"
+                    className="max-w-[80%] rounded-xl px-4 py-3"
                     style={{
-                      background: "var(--surface-primary)",
-                      border: "1px solid var(--border-default)",
-                      borderRadius: "20px 20px 20px 6px",
+                      background:
+                        msg.role === "user"
+                          ? "var(--accent)"
+                          : "var(--surface-primary)",
+                      color: msg.role === "user" ? "#fff" : "var(--text-primary)",
+                      border:
+                        msg.role === "assistant"
+                          ? "0.5px solid var(--border-default)"
+                          : "none",
                     }}
                   >
-                    <span className="typing-dot" />
-                    <span className="typing-dot" style={{ animationDelay: "0.15s" }} />
-                    <span className="typing-dot" style={{ animationDelay: "0.3s" }} />
-                    <span className="text-xs ml-2" style={{ color: "var(--text-tertiary)" }}>
-                      กำลังคิด...
+                    <div className="text-sm leading-relaxed">
+                      {msg.role === "assistant" ? renderMarkdown(msg.content) : msg.content}
+                    </div>
+                    {msg.role === "assistant" && (
+                      <div className="flex items-center gap-3 mt-2 pt-2 text-xs" style={{ color: "var(--text-tertiary)", borderTop: "0.5px solid var(--border-default)" }}>
+                        {msg.model && <span>{msg.model}</span>}
+                        {msg.latencyMs ? <span>{msg.latencyMs}ms</span> : null}
+                        {msg.tokens && msg.tokens.input + msg.tokens.output > 0 && (
+                          <span>{(msg.tokens.input + msg.tokens.output).toLocaleString()} tok</span>
+                        )}
+                        <button
+                          onClick={() => navigator.clipboard.writeText(msg.content)}
+                          className="hover:opacity-80"
+                          style={{ color: "var(--text-tertiary)" }}
+                        >
+                          Copy
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {sending && (
+                <div className="flex justify-start">
+                  <div
+                    className="rounded-xl px-4 py-3 text-sm"
+                    style={{ background: "var(--surface-primary)", border: "0.5px solid var(--border-default)", color: "var(--text-tertiary)" }}
+                  >
+                    <span className="inline-flex gap-1">
+                      <span className="animate-pulse">●</span>
+                      <span className="animate-pulse" style={{ animationDelay: "0.2s" }}>●</span>
+                      <span className="animate-pulse" style={{ animationDelay: "0.4s" }}>●</span>
                     </span>
                   </div>
                 </div>
-              </div>
-            )}
-            <div ref={scrollRef} />
-          </div>
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+          )}
         </div>
 
-        {/* Input area */}
+        {/* Input */}
         <div
-          className="flex-shrink-0 px-5 py-3"
-          style={{
-            borderTop: "1px solid var(--border-default)",
-            background: "var(--surface-primary)",
-          }}
+          className="px-5 py-3 border-t flex-shrink-0"
+          style={{ background: "var(--surface-primary)", borderColor: "var(--border-default)" }}
         >
-          <div className="max-w-3xl mx-auto">
-            <div className="flex items-end gap-2">
-              <AutoResizeTextarea
-                value={input}
-                onChange={setInput}
-                onSubmit={handleSend}
-                placeholder={`ส่งข้อความถึง ${currentAgent?.name || "agent"}... (Shift+Enter ขึ้นบรรทัดใหม่)`}
-                disabled={!selectedAgent || sending}
-              />
-              <button
-                onClick={handleSend}
-                disabled={!input.trim() || sending || !selectedAgent}
-                className="flex items-center justify-center w-10 h-10 rounded-xl transition-all hover:scale-105 flex-shrink-0"
-                style={{
-                  background: input.trim() ? "#6366f1" : "var(--surface-tertiary)",
-                  color: input.trim() ? "#fff" : "var(--text-tertiary)",
-                  opacity: input.trim() ? 1 : 0.5,
-                  cursor: input.trim() ? "pointer" : "default",
-                }}
-              >
-                <Send size={18} className={input.trim() ? "" : ""} />
-              </button>
-            </div>
-            <p className="text-center text-xs mt-2" style={{ color: "var(--text-tertiary)", opacity: 0.6 }}>
-              Agent Fleet Chat · Powered by OpenClaw
-            </p>
+          <div
+            className="flex items-end gap-3 max-w-3xl mx-auto rounded-xl px-4 py-2"
+            style={{ background: "var(--surface-secondary)", border: "0.5px solid var(--border-default)" }}
+          >
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={handleTextareaChange}
+              onKeyDown={handleKeyDown}
+              placeholder={`Message ${currentAgent?.name || "agent"}...`}
+              rows={1}
+              className="flex-1 text-sm resize-none bg-transparent outline-none"
+              style={{ color: "var(--text-primary)", minHeight: "44px", maxHeight: "160px", lineHeight: "22px", paddingTop: "11px" }}
+            />
+            <button
+              onClick={handleSend}
+              disabled={!input.trim() || sending}
+              className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center mb-1"
+              style={{
+                background: input.trim() ? "var(--accent)" : "var(--surface-tertiary)",
+                color: input.trim() ? "#fff" : "var(--text-tertiary)",
+                transition: "all 0.15s",
+              }}
+            >
+              ↑
+            </button>
           </div>
+          <p className="text-xs text-center mt-2" style={{ color: "var(--text-tertiary)" }}>
+            Shift+Enter for new line · Messages saved locally
+          </p>
         </div>
       </div>
-
-      {/* ── Styles ─────────────────────────────────── */}
-      <style>{`
-        .typing-dot {
-          display: inline-block;
-          width: 6px;
-          height: 6px;
-          border-radius: 50%;
-          background: var(--accent-muted, #818cf8);
-          animation: typing-bounce 1.2s ease-in-out infinite;
-        }
-        @keyframes typing-bounce {
-          0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
-          30% { transform: translateY(-6px); opacity: 1; }
-        }
-
-        .markdown-content p + p { margin-top: 0.5rem; }
-        .markdown-content pre { margin: 0; }
-        .markdown-content code { font-family: 'JetBrains Mono', monospace; }
-
-        /* Smooth scroll for chat */
-        .overflow-y-auto { scroll-behavior: smooth; }
-
-        /* Hover effect on messages */
-        .group:hover { background: rgba(99,102,241,0.02); }
-      `}</style>
     </div>
   );
 }

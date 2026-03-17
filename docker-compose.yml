@@ -1,5 +1,3 @@
-version: "3.8"
-
 # =============================================================================
 # Agent Fleet — Docker Compose
 # 6x OpenClaw Gateways + 1x n8n + 1x cAdvisor + 1x Dashboard
